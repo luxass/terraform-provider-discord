@@ -179,43 +179,9 @@ func (r *channelPermissionResource) Create(ctx context.Context, req resource.Cre
 		deny = data.Deny.ValueInt64()
 	}
 
-	// Create the permission overwrite
-	overwrite := &discordgo.PermissionOverwrite{
-		ID:    overwriteID,
-		Type:  overwriteType,
-		Allow: allow,
-		Deny:  deny,
-	}
-
-	// Get current channel to preserve existing overwrites
-	channel, err := r.client.Channel(channelID)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error Fetching Channel",
-			fmt.Sprintf("Unable to fetch channel %s: %s", channelID, err.Error()),
-		)
-		return
-	}
-
-	// Build new permission overwrites list
-	overwrites := make([]*discordgo.PermissionOverwrite, 0, len(channel.PermissionOverwrites)+1)
-
-	// Copy existing overwrites (excluding the one we're updating)
-	for _, existing := range channel.PermissionOverwrites {
-		if existing.ID != overwriteID || existing.Type != overwriteType {
-			overwrites = append(overwrites, existing)
-		}
-	}
-
-	// Add our new/updated overwrite
-	overwrites = append(overwrites, overwrite)
-
-	// Update channel with new permission overwrites
-	edit := &discordgo.ChannelEdit{
-		PermissionOverwrites: overwrites,
-	}
-
-	updatedChannel, err := r.client.ChannelEditComplex(channelID, edit)
+	// Write only this target's overwrite. Replacing the channel's entire list
+	// can discard changes made concurrently by other resources or clients.
+	err := r.client.ChannelPermissionSet(channelID, overwriteID, overwriteType, allow, deny, discordgo.WithContext(ctx))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Setting Channel Permission",
@@ -224,45 +190,11 @@ func (r *channelPermissionResource) Create(ctx context.Context, req resource.Cre
 		return
 	}
 
-	// Find the overwrite we just created to get the final state
-	var finalOverwrite *discordgo.PermissionOverwrite
-	for _, ow := range updatedChannel.PermissionOverwrites {
-		if ow.ID == overwriteID && ow.Type == overwriteType {
-			finalOverwrite = ow
-			break
-		}
-	}
-
-	// If not found in immediate response, fetch channel again to verify
-	if finalOverwrite == nil {
-		// Fetch the channel again to get the latest state
-		refreshedChannel, err := r.client.Channel(channelID)
-		if err == nil {
-			for _, ow := range refreshedChannel.PermissionOverwrites {
-				if ow.ID == overwriteID && ow.Type == overwriteType {
-					finalOverwrite = ow
-					break
-				}
-			}
-		}
-	}
-
-	// If still not found, the role/user doesn't exist - fail the operation
-	if finalOverwrite == nil {
-		resp.Diagnostics.AddError(
-			"Permission Overwrite Not Created",
-			fmt.Sprintf("The permission overwrite for %s '%s' was not created. This means the %s ID '%s' doesn't exist in your Discord server.\n\nVerify the %s exists in your Discord server and that the bot has permission to view it. Get valid IDs by enabling Developer Mode in Discord and right-clicking the %s.", typeStr, overwriteID, typeStr, overwriteID, typeStr, typeStr),
-		)
-		return
-	}
-
-	// Update model with created permission data from API response
+	// The overwrite endpoint returns 204 No Content. Record the accepted values;
+	// Read will reconcile any subsequent changes made outside Terraform.
 	data.ID = types.StringValue(fmt.Sprintf("%s:%s", channelID, overwriteID))
-	data.ChannelID = types.StringValue(channelID)
-	data.Type = types.StringValue(typeStr)
-	data.OverwriteID = types.StringValue(overwriteID)
-	data.Allow = types.Int64Value(finalOverwrite.Allow)
-	data.Deny = types.Int64Value(finalOverwrite.Deny)
+	data.Allow = types.Int64Value(allow)
+	data.Deny = types.Int64Value(deny)
 
 	// Save data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -405,41 +337,8 @@ func (r *channelPermissionResource) Update(ctx context.Context, req resource.Upd
 		deny = plan.Deny.ValueInt64()
 	}
 
-	// Get current channel to preserve existing overwrites
-	channel, err := r.client.Channel(channelID)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error Fetching Channel",
-			fmt.Sprintf("Unable to fetch channel %s: %s", channelID, err.Error()),
-		)
-		return
-	}
-
-	// Build new permission overwrites list
-	overwrites := make([]*discordgo.PermissionOverwrite, 0, len(channel.PermissionOverwrites))
-
-	// Copy existing overwrites (excluding the one we're updating)
-	for _, existing := range channel.PermissionOverwrites {
-		if existing.ID != overwriteID || existing.Type != overwriteType {
-			overwrites = append(overwrites, existing)
-		}
-	}
-
-	// Add our updated overwrite
-	overwrite := &discordgo.PermissionOverwrite{
-		ID:    overwriteID,
-		Type:  overwriteType,
-		Allow: allow,
-		Deny:  deny,
-	}
-	overwrites = append(overwrites, overwrite)
-
-	// Update channel with new permission overwrites
-	edit := &discordgo.ChannelEdit{
-		PermissionOverwrites: overwrites,
-	}
-
-	updatedChannel, err := r.client.ChannelEditComplex(channelID, edit)
+	// PUT updates only this target and leaves every other overwrite untouched.
+	err := r.client.ChannelPermissionSet(channelID, overwriteID, overwriteType, allow, deny, discordgo.WithContext(ctx))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Updating Channel Permission",
@@ -448,51 +347,10 @@ func (r *channelPermissionResource) Update(ctx context.Context, req resource.Upd
 		return
 	}
 
-	// Find the overwrite we just updated to get the final state
-	var finalOverwrite *discordgo.PermissionOverwrite
-	for _, ow := range updatedChannel.PermissionOverwrites {
-		if ow.ID == overwriteID && ow.Type == overwriteType {
-			finalOverwrite = ow
-			break
-		}
-	}
-
-	// If not found in immediate response, fetch channel again to verify
-	if finalOverwrite == nil {
-		// Fetch the channel again to get the latest state
-		refreshedChannel, err := r.client.Channel(channelID)
-		if err == nil {
-			for _, ow := range refreshedChannel.PermissionOverwrites {
-				if ow.ID == overwriteID && ow.Type == overwriteType {
-					finalOverwrite = ow
-					break
-				}
-			}
-		}
-	}
-
-	// If still not found, use the values we sent (API accepted them, so they're valid)
-	if finalOverwrite == nil {
-		resp.Diagnostics.AddWarning(
-			"Permission Overwrite Not Found in Response",
-			fmt.Sprintf("The permission overwrite for %s %s was updated successfully, but was not found in the API response. Using the values that were sent.", typeStr, overwriteID),
-		)
-		// Use the values we sent since the API call succeeded
-		plan.ID = types.StringValue(fmt.Sprintf("%s:%s", channelID, overwriteID))
-		plan.ChannelID = types.StringValue(channelID)
-		plan.Type = types.StringValue(typeStr)
-		plan.OverwriteID = types.StringValue(overwriteID)
-		plan.Allow = types.Int64Value(allow)
-		plan.Deny = types.Int64Value(deny)
-	} else {
-		// Update state with latest permission data from API response
-		plan.ID = types.StringValue(fmt.Sprintf("%s:%s", channelID, overwriteID))
-		plan.ChannelID = types.StringValue(channelID)
-		plan.Type = types.StringValue(typeStr)
-		plan.OverwriteID = types.StringValue(overwriteID)
-		plan.Allow = types.Int64Value(finalOverwrite.Allow)
-		plan.Deny = types.Int64Value(finalOverwrite.Deny)
-	}
+	// The overwrite endpoint returns 204 No Content.
+	plan.ID = types.StringValue(fmt.Sprintf("%s:%s", channelID, overwriteID))
+	plan.Allow = types.Int64Value(allow)
+	plan.Deny = types.Int64Value(deny)
 
 	// Save updated data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -521,43 +379,9 @@ func (r *channelPermissionResource) Delete(ctx context.Context, req resource.Del
 	typeStr := data.Type.ValueString()
 	overwriteID := data.OverwriteID.ValueString()
 
-	// Validate type
-	var overwriteType discordgo.PermissionOverwriteType
-	switch typeStr {
-	case "role":
-		overwriteType = discordgo.PermissionOverwriteTypeRole
-	case "member":
-		overwriteType = discordgo.PermissionOverwriteTypeMember
-	default:
-		// Invalid type, but we'll try to delete anyway
-		overwriteType = discordgo.PermissionOverwriteTypeRole
-	}
-
-	// Get current channel to remove the overwrite
-	channel, err := r.client.Channel(channelID)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error Fetching Channel",
-			fmt.Sprintf("Unable to fetch channel %s: %s", channelID, err.Error()),
-		)
-		return
-	}
-
-	// Build new permission overwrites list without the one we're deleting
-	overwrites := make([]*discordgo.PermissionOverwrite, 0, len(channel.PermissionOverwrites))
-	for _, existing := range channel.PermissionOverwrites {
-		if existing.ID != overwriteID || existing.Type != overwriteType {
-			overwrites = append(overwrites, existing)
-		}
-	}
-
-	// Update channel with permission overwrites (removing the deleted one)
-	edit := &discordgo.ChannelEdit{
-		PermissionOverwrites: overwrites,
-	}
-
-	_, err = r.client.ChannelEditComplex(channelID, edit)
-	if err != nil {
+	// Delete only this target, without rewriting the other channel overwrites.
+	err := r.client.ChannelPermissionDelete(channelID, overwriteID, discordgo.WithContext(ctx))
+	if err != nil && !IsDiscordNotFound(err) {
 		resp.Diagnostics.AddError(
 			"Error Deleting Channel Permission",
 			fmt.Sprintf("Unable to delete permission for %s %s on channel %s: %s", typeStr, overwriteID, channelID, err.Error()),
