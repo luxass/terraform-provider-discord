@@ -57,3 +57,16 @@ output "everyone_role_id" {
 - `id` (String) The ID of the @everyone role (same as guild_id).
 - `managed` (Boolean) Whether this role is managed by an integration. This is always false for @everyone role.
 - `position` (Number) The position of the role in the guild's role hierarchy. This is always 0 for @everyone role.
+
+## Import
+
+Import is supported using the following syntax:
+
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
+```shell
+# Import @everyone using the guild ID, which is also the role ID.
+# Import reads the current settings without modifying the role.
+# Review the next plan before applying any configured permission changes.
+terraform import discord_everyone_role.example 1452601985235816601
+```

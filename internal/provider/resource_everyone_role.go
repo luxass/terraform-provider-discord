@@ -3,8 +3,10 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -13,10 +15,9 @@ import (
 // Ensure the resource type implements the required interfaces.
 var _ resource.Resource = &everyoneRoleResource{}
 var _ resource.ResourceWithConfigure = &everyoneRoleResource{}
+var _ resource.ResourceWithImportState = &everyoneRoleResource{}
 
 // everyoneRoleResource defines the resource implementation.
-// Note: This resource does NOT implement ResourceWithImportState because
-// the @everyone role always exists and doesn't need importing.
 type everyoneRoleResource struct {
 	client *discordgo.Session
 }
@@ -288,8 +289,8 @@ func (r *everyoneRoleResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 
-	// Fetch all roles and find the @everyone role
-	roles, err := r.client.GuildRoles(guildID)
+	// The @everyone role ID is the guild ID. A role name is not its identity.
+	roles, err := r.client.GuildRoles(guildID, discordgo.WithContext(ctx))
 	if err != nil {
 		if IsDiscordNotFound(err) {
 			resp.State.RemoveResource(ctx)
@@ -306,7 +307,7 @@ func (r *everyoneRoleResource) Read(ctx context.Context, req resource.ReadReques
 	var everyoneRole *discordgo.Role
 	found := false
 	for _, role := range roles {
-		if role.ID == guildID || role.Name == "@everyone" {
+		if role.ID == guildID {
 			everyoneRole = role
 			found = true
 			break
@@ -495,4 +496,20 @@ func (r *everyoneRoleResource) Delete(ctx context.Context, req resource.DeleteRe
 			"If you need to revert changes, manually update the @everyone role in Discord or re-apply Terraform with different values.",
 	)
 	// No API call needed - just remove from state
+}
+
+// ImportState adopts the existing @everyone role by its guild ID.
+// Terraform's subsequent Read populates the live attributes without modifying them.
+func (r *everyoneRoleResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	guildID, err := strconv.ParseUint(req.ID, 10, 64)
+	if err != nil || guildID == 0 || strconv.FormatUint(guildID, 10) != req.ID {
+		resp.Diagnostics.AddError(
+			"Invalid Import ID",
+			"Import the @everyone role using its guild ID as a positive 64-bit decimal snowflake. The @everyone role ID is the same as the guild ID.",
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("guild_id"), types.StringValue(req.ID))...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), types.StringValue(req.ID))...)
 }
